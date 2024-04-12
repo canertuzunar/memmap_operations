@@ -1,5 +1,5 @@
 #![allow(unused)]
-use std::{fs::{File, OpenOptions}, io::{Read, Seek}};
+use std::{ffi::FromBytesUntilNulError, fs::{File, OpenOptions}, io::{Error, Read, Seek}};
 
 use memmap2::{MmapMut, MmapOptions, RemapOptions};
 
@@ -57,7 +57,7 @@ impl IndexBlock {
    }
 
    fn get_deserialized(iblock: &Vec<u8>) -> Self {
-      println!("dd{:?}", String::from_utf8_lossy(iblock));
+      println!("{:?}", String::from_utf8_lossy(iblock));
       let deserialized: IndexBlock = serde_json::from_slice(&iblock).expect("deserialized error");
 
       deserialized
@@ -101,7 +101,9 @@ fn main() {
       .expect("failed to create map of file")
    };
 
-   // write_mmap(&mut file, &mut mmap, key, value);
+   write_mmap(&mut file, &mut mmap, key, value);
+   write_mmap(&mut file, &mut mmap, "key2", "value2");
+   write_mmap(&mut file, &mut mmap, "key3", "value3");
    read_mmap(mmap, "key1")
 
 }
@@ -111,44 +113,27 @@ fn read_mmap(mmap: MmapMut, key: &str) {
    let mut mmap_len = &mmap.len(); 
 
    let footer_buf = &mmap[mmap_len - FOOTER_SIZE as usize..*mmap_len];
-   // file.seek(std::io::SeekFrom::End(-(FOOTER_SIZE as i64))).expect("seek error");
-
-
-   // let mut footer_buf =[0u8; 8]; 
-
-   // file.read_exact(&mut footer_buf).unwrap();
-
 
    let footer = Footer::from_bytes(footer_buf);
 
    println!("index block offset {}", footer.index_block_offset as usize);
-
-   // seek and read index block from file
+   
 
    let end_on_index_block = mmap_len - (FOOTER_SIZE as usize);
 
-   // file.seek(std::io::SeekFrom::Start(footer.index_block_offset)).expect("seek error");
 
-   // let mut part_of_file = vec![0u8; (end_on_index_block - footer.index_block_offset as usize-8) as usize];
    println!("{}, {}", footer.index_block_offset, end_on_index_block);
-   // let mut part_of_file:&[u8]= &mmap[end_on_index_block - footer.index_block_offset as usize -55..end_on_index_block - footer.index_block_offset as usize +11];
-   let mut part_of_file= &mmap[(footer.index_block_offset as usize)..end_on_index_block];
-   // file.read_exact(&mut part_of_file).expect("read error of part of file");
+   let mut index_block= &mmap[(footer.index_block_offset as usize)..end_on_index_block];
 
-   let ib = IndexBlock::get_deserialized(&part_of_file.to_vec());
+   let ib = IndexBlock::get_deserialized(&index_block.to_vec());
 
 
-   println!("index block data is {}", String::from_utf8_lossy(&part_of_file));
+   println!("index block data is {}", String::from_utf8_lossy(&index_block));
 
    let idata = &ib.index_block[0];
 
    println!("value offset is {} and length is {}", idata.offset, idata.value_length);
 
-   // file.seek(std::io::SeekFrom::Start(idata.offset-1)).expect("seek error");
-
-   // let mut val = vec![0u8; idata.value_length as usize];
-
-   // file.read_exact(&mut val).expect("read exact error");
 
    let val = &mmap[(idata.offset as usize)-1..];
 
@@ -174,7 +159,7 @@ fn write_mmap(mut file: &mut File, mut mmap: &mut MmapMut, key: &str, value: &st
       mmap[mmap_len - data.len()..].copy_from_slice(data.as_bytes());
    }
 
-   println!("code is here");
+
    mmap_len = mmap.len();
 
    //get index block offset
@@ -185,11 +170,10 @@ fn write_mmap(mut file: &mut File, mut mmap: &mut MmapMut, key: &str, value: &st
    let idata = IndexData::new(String::from(key), value_offset as u64, value.len() as u64);
    println!("current index data is {:?}", idata);
 
-   //create and write or append index block
-   // file.seek(std::io::SeekFrom::End(-1)).unwrap();
+   //Index data must append to iblock if IndexBlock exist
+   // let check_footer = &mmap[mmap_len - FOOTER_SIZE];
+
    let iblock  = IndexBlock::new(idata);
-   // println!("current index block is {:?}", String::from_utf8(iblock.get()));
-   // file.set_len(file.metadata().unwrap().len() + iblock.get().len() as u63).expect("set length failed");
 
    mmap_len = mmap.len();
    file.set_len((mmap_len + iblock.get_serialized().len()) as u64);
@@ -204,15 +188,11 @@ fn write_mmap(mut file: &mut File, mut mmap: &mut MmapMut, key: &str, value: &st
 
    //create footer with index block offset information
    let footer = Footer {index_block_offset};
-   //move to cursor end of the file 
-   // file.seek(std::io::SeekFrom::End(-1)).unwrap();
 
+   //move to cursor end of the file 
    println!("footer bytes {:?}", &footer.to_bytes());
 
    //write footer the mmap
-
-   // file.set_len(file.metadata().unwrap().len() + footer.to_bytes().len() as u63).expect("set length failed");
-
    mmap_len = mmap.len();
 
    file.set_len((mmap_len + footer.to_bytes().len()) as u64);
@@ -222,6 +202,21 @@ fn write_mmap(mut file: &mut File, mut mmap: &mut MmapMut, key: &str, value: &st
    mmap_len = mmap.len();
    mmap[mmap_len - &footer.to_bytes().len()..].copy_from_slice(&footer.to_bytes()[..]);
    //flush data<footer> to disk
-   mmap.flush().expect("data block flush failed")
+   // mmap.flush().expect("data block flush failed")
 
 }
+
+// fn check_index_block(mmap: MmapMut) -> (IndexBlock, bool)  {
+//    let mmap_len = mmap.len();
+
+//    let footer_start_offset = mmap_len - FOOTER_SIZE as usize;
+//    let footer_bytes = &mmap[footer_start_offset..];
+//    let iblock = match Footer::from_bytes(footer_bytes) {
+//       Ok(footer) => {
+
+//       },
+//       Err(e) => {
+//          return false
+//       }
+//    }
+// }
